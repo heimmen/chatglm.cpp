@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from tabulate import tabulate
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
+import os
 
 GGML_QK8_0 = 32
 GGML_QK4_0 = 32
@@ -418,6 +419,36 @@ def convert(f: BinaryIO, model_name_or_path: str, lora_model_name_or_path: Optio
         raise RuntimeError(f"Unknown model type {model.config.model_type}")
 
 
+def convertPtuning(f: BinaryIO, model_name_or_path: str, lora_model_name_or_path: Optional[str] = None, dtype: str = "q4_0"):
+    ggml_type = GGMLType[dtype.upper()]
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+
+    config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True, pre_seq_len=128)
+    if "AutoModel" in config.auto_map:
+        auto_model_class = AutoModel
+    elif "AutoModelForCausalLM" in config.auto_map:
+        auto_model_class = AutoModelForCausalLM
+    else:
+        raise RuntimeError(f"Cannot find auto model class to load {model_name_or_path}")
+
+    model = auto_model_class.from_pretrained("THUDM/chatglm-6b", config=config, trust_remote_code=True)
+    CHECKPOINT_PATH = "C:\\Users\\yl\\git\\ChatGLM-6B\\ptuning\\output\\adgen-chatglm-6b-pt-128-2e-2\\checkpoint-3000"
+    prefix_state_dict = torch.load(os.path.join(CHECKPOINT_PATH, "pytorch_model.bin"))
+    new_prefix_state_dict = {}
+    for k, v in prefix_state_dict.items():
+        if k.startswith("transformer.prefix_encoder."):
+            new_prefix_state_dict[k[len("transformer.prefix_encoder."):]] = v
+    model.transformer.prefix_encoder.load_state_dict(new_prefix_state_dict)
+
+    if model.config.model_type == "chatglm":
+        if hasattr(model.config, "multi_query_attention"):
+            ChatGLM2Converter.convert(f, model, tokenizer, ggml_type)
+        else:
+            ChatGLMConverter.convert(f, model, tokenizer, ggml_type)
+    else:
+        raise RuntimeError(f"Unknown model type {model.config.model_type}")
+
 def main():
     parser = argparse.ArgumentParser("chatglm-convert")
     parser.add_argument(
@@ -448,7 +479,7 @@ def main():
     args = parser.parse_args()
 
     with open(args.save_path, "wb") as f:
-        convert(f, args.model_name_or_path, dtype=args.type)
+        convertPtuning(f, args.model_name_or_path, dtype=args.type)
 
     print(f"GGML model saved to {args.save_path}")
 
