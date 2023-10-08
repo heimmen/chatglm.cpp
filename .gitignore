@@ -18,3 +18,10 @@ build/
 *.bin
 
 venv
+
+CMakeFiles
+
+*.vcx*
+*.cmake
+ChatGLM.cpp.sln
+CMakeCache.txt
