@@ -204,6 +204,49 @@ class BaseConverter:
         cls.dump_model(f, model, ggml_type)
 
 
+class PrefixEncoder(torch.nn.Module):
+    """
+    The torch.nn model to encode the prefix
+    Input shape: (batch-size, prefix-length)
+    Output shape: (batch-size, prefix-length, 2*layers*hidden)
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self.prefix_projection = config.prefix_projection
+        if self.prefix_projection:
+            # Use a two-layer MLP to encode the prefix
+            self.embedding = torch.nn.Embedding(config.pre_seq_len, config.hidden_size)
+            self.trans = torch.nn.Sequential(
+                torch.nn.Linear(config.hidden_size, config.hidden_size),
+                torch.nn.Tanh(),
+                torch.nn.Linear(config.hidden_size, config.num_layers * config.hidden_size * 2)
+            )
+        else:
+            self.embedding = torch.nn.Embedding(config.pre_seq_len, config.num_layers * config.hidden_size * 2)
+
+    def forward(self, prefix: torch.Tensor):
+        if self.prefix_projection:
+            prefix_tokens = self.embedding(prefix)
+            past_key_values = self.trans(prefix_tokens)
+        else:
+            past_key_values = self.embedding(prefix)
+        return past_key_values
+
+class ModifiedBertModel(torch.nn.Module):
+    def __init__(self, bert_model, prefix_encoder):
+        super(ModifiedBertModel, self).__init__()
+        self.bert = bert_model
+        self.prefix_encoder = prefix_encoder
+
+    def forward(self, input_ids, attention_mask):
+        # 使用原始 BERT 的前向传播
+        bert_output = self.bert(input_ids, attention_mask)
+        # 将 BERT 的输出传递给PrefixEncoder
+        encoded_output = self.prefix_encoder(bert_output.last_hidden_state)
+        return encoded_output
+
+
 class ChatGLMConverter(BaseConverter):
     MODEL_TYPE = ModelType.CHATGLM
 
@@ -438,14 +481,17 @@ def convertPtuning(f: BinaryIO, model_name_or_path: str, lora_model_name_or_path
     new_prefix_state_dict = {}
     for k, v in prefix_state_dict.items():
         if k.startswith("transformer.prefix_encoder."):
+            print(f'Got transformer.prefix_encoder v: {v}')
             new_prefix_state_dict[k[len("transformer.prefix_encoder."):]] = v
     model.transformer.prefix_encoder.load_state_dict(new_prefix_state_dict)
+    prefix_encoder = PrefixEncoder(model.config)
+    modified_bert_model = ModifiedBertModel(model, prefix_encoder)
 
     if model.config.model_type == "chatglm":
         if hasattr(model.config, "multi_query_attention"):
             ChatGLM2Converter.convert(f, model, tokenizer, ggml_type)
         else:
-            ChatGLMConverter.convert(f, model, tokenizer, ggml_type)
+            ChatGLMConverter.convert(f, modified_bert_model, tokenizer, ggml_type)
     else:
         raise RuntimeError(f"Unknown model type {model.config.model_type}")
 
@@ -479,7 +525,7 @@ def main():
     args = parser.parse_args()
 
     with open(args.save_path, "wb") as f:
-        convertPtuning(f, args.model_name_or_path, dtype=args.type)
+        convert(f, args.model_name_or_path, dtype=args.type)
 
     print(f"GGML model saved to {args.save_path}")
 
