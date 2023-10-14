@@ -400,7 +400,7 @@ def convert(f: BinaryIO, model_name_or_path: str, lora_model_name_or_path: Optio
 
     if lora_model_name_or_path is not None:
         from peft import PeftModel
-
+        print(">>>> Load lora model.")
         model = PeftModel.from_pretrained(model, lora_model_name_or_path)
         model = model.merge_and_unload()
 
@@ -448,7 +448,7 @@ def main():
     args = parser.parse_args()
 
     with open(args.save_path, "wb") as f:
-        convert(f, args.model_name_or_path, dtype=args.type)
+        convert(f, args.model_name_or_path, args.lora_model_name_or_path, dtype=args.type)
 
     print(f"GGML model saved to {args.save_path}")
 
