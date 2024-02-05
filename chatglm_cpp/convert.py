@@ -238,6 +238,7 @@ class ModifiedBertModel(torch.nn.Module):
         super(ModifiedBertModel, self).__init__()
         self.bert = bert_model
         self.prefix_encoder = prefix_encoder
+        self.config = bert_model.config
 
     def forward(self, input_ids, attention_mask):
         # 使用原始 BERT 的前向传播
@@ -484,14 +485,18 @@ def convertPtuning(f: BinaryIO, model_name_or_path: str, lora_model_name_or_path
             print(f'Got transformer.prefix_encoder v: {v}')
             new_prefix_state_dict[k[len("transformer.prefix_encoder."):]] = v
     model.transformer.prefix_encoder.load_state_dict(new_prefix_state_dict)
-    prefix_encoder = PrefixEncoder(model.config)
-    modified_bert_model = ModifiedBertModel(model, prefix_encoder)
+    model = model.quantize(4)
+    # model = model.half().cuda()
+    model.transformer.prefix_encoder.float()
+    model = model.eval()
+    # prefix_encoder = PrefixEncoder(model.config)
+    # modified_bert_model = ModifiedBertModel(model, prefix_encoder)
 
     if model.config.model_type == "chatglm":
         if hasattr(model.config, "multi_query_attention"):
             ChatGLM2Converter.convert(f, model, tokenizer, ggml_type)
         else:
-            ChatGLMConverter.convert(f, modified_bert_model, tokenizer, ggml_type)
+            ChatGLMConverter.convert(f, model, tokenizer, ggml_type)
     else:
         raise RuntimeError(f"Unknown model type {model.config.model_type}")
 
@@ -525,7 +530,7 @@ def main():
     args = parser.parse_args()
 
     with open(args.save_path, "wb") as f:
-        convert(f, args.model_name_or_path, dtype=args.type)
+        convertPtuning(f, args.model_name_or_path, dtype=args.type)
 
     print(f"GGML model saved to {args.save_path}")
 
